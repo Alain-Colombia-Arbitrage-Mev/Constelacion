@@ -1,0 +1,100 @@
+/* styles.css */
+body {
+    font-family: 'Roboto', sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #121212;
+    color: #ffffff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+header {
+    background-color: #1e1e1e;
+    width: 100%;
+    padding: 1rem 0;
+    text-align: center;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+header h1 {
+    margin: 0;
+    font-size: 2.5rem;
+    color: #e2b007;
+}
+
+main {
+    width: 90%;
+    max-width: 1200px;
+    padding: 2rem;
+    background-color: #1e1e1e;
+    border-radius: 8px;
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+#signals {
+    width: 100%;
+    margin-bottom: 2rem;
+}
+
+#signals h2 {
+    text-align: center;
+    margin-bottom: 1rem;
+    color: #e2b007;
+}
+
+#signalsTable {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+}
+
+#signalsTable th, #signalsTable td {
+    border: 1px solid #444;
+    padding: 12px;
+    text-align: center;
+}
+
+#signalsTable th {
+    background-color: #333;
+    color: #e2b007;
+}
+
+#signalsTable td {
+    background-color: #222;
+}
+
+#images {
+    text-align: center;
+}
+
+#images h2 {
+    margin-bottom: 1rem;
+    color: #e2b007;
+}
+
+#images img {
+    width: 100%;
+    max-width: 500px;
+    height: auto;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+
+
+#tryNowButton {
+    margin-top: 1rem;
+    padding: 1rem 2rem;
+    background-color: #e2b007;
+    border: none;
+    border-radius: 8px;
+    color: #1e1e1e;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}

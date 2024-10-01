@@ -1,0 +1,7 @@
+xgboost
+pandas
+yfinance
+scikit-learn
+seaborn
+python-telegram-bot
+mplfinance
