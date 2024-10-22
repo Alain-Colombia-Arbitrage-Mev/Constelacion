@@ -1,7 +1,7 @@
 import requests
 import json
 # Define la URL del API a donde se enviará el `prediction_data`
-api_url = "http://bot.fidubit.co:3000/api/signals"  # Cambia esta URL a la de tu API PHP
+api_url = "https://api.bigseer.vip/api/signals"  # Cambia esta URL a la de tu API PHP
 
 # Función para enviar los datos de predicción al API
 bearer_token = "Mfeqr6ufjabYGFPGGBObdr1tug1qKEkNHR76iWjkcyLjN3nrTpbvTxognQArQTQr6fpPJY0kRAYTxN+JGWCL+Q=="  # Reemplaza con tu token
