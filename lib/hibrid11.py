@@ -1,5 +1,8 @@
+
+#prediccion para 1 dia 
 import sys
 sys.path.insert(0, './lib')
+# sys.path.insert(1, './lib/api')
 
 import os
 import pandas as pd
@@ -21,6 +24,9 @@ from telegram.error import TelegramError
 import mplfinance as mpf
 import argparse
 
+# api
+from api.client import send_prediction_data_to_api
+
 warnings.filterwarnings("ignore")
 
 # Definir la zona horaria de Colombia
@@ -33,7 +39,7 @@ args = parser.parse_args()
 
 # Global variables
 SYMBOL = args.symbol.upper()
-INTERVAL = '1d'  # Fixed interval
+INTERVAL = '1d'  # Fixed interval for prediction
 
 def feature_engineering(data, SPY, predictions=np.array([None]))->pd.core.frame.DataFrame:
     assert type(data) == pd.core.frame.DataFrame, "data must be a dataframe"
@@ -42,7 +48,7 @@ def feature_engineering(data, SPY, predictions=np.array([None]))->pd.core.frame.
 
     if predictions.any() == True:
         data = yf.download(SYMBOL, start="2009-11-30")
-        SPY = yf.download("DX-Y.NYB", start="2001-11-30")["Close"] 
+        SPY = yf.download("SPY", start="2001-11-30")["Close"] 
         data = features(data, SPY)
         data["Predictions"] = predictions
         data["Close"] = data["Close_y"]
@@ -152,12 +158,23 @@ def get_current_price(symbol):
     todays_data = ticker.history(period='1d')
     return todays_data['Close'][0]
 
-def get_historical_prices(symbol, days=7, interval='1d'):
+def get_historical_prices(symbol, days=365, interval='1d'):
     end_date = datetime.now(pytz.UTC)
     start_date = end_date - timedelta(days=days)
+    
     data = yf.download(symbol, start=start_date, end=end_date, interval=interval)
     if data.empty:
         print(f"Advertencia: No se pudieron obtener datos históricos para {symbol}")
+        return pd.DataFrame(columns=['Close', 'High', 'Low', 'Volume'])
+    return data[['Close', 'High', 'Low', 'Volume']]
+
+def get_recent_prices(symbol, days=3, interval='1h'):
+    end_date = datetime.now(pytz.UTC)
+    start_date = end_date - timedelta(days=days)
+    
+    data = yf.download(symbol, start=start_date, end=end_date, interval=interval)
+    if data.empty:
+        print(f"Advertencia: No se pudieron obtener datos recientes para {symbol}")
         return pd.DataFrame(columns=['Close', 'High', 'Low', 'Volume'])
     return data[['Close', 'High', 'Low', 'Volume']]
 
@@ -169,7 +186,7 @@ def get_highest_volume_prices(historical_prices, n=4):
     
     highest_volume_prices = [
         {
-            'date': date.strftime('%Y-%m-%d %H:%M'),
+            'date': date.strftime('%Y-%m-%d'),
             'price': price,
             'volume': volume
         }
@@ -181,31 +198,74 @@ def get_highest_volume_prices(historical_prices, n=4):
 def determine_trade_direction(current_price, predicted_price):
     return "LONG 📈" if predicted_price > current_price else "SHORT 📉"
 
-def find_entry_and_targets(historical_prices, current_price, predicted_price, trade_direction):
-    if historical_prices.empty:
-        print("Advertencia: Datos históricos vacíos. Usando precios actuales y predichos.")
-        highest_price = max(current_price, predicted_price)
-        lowest_price = min(current_price, predicted_price)
-    else:
-        highest_price = historical_prices['High'].max()
-        lowest_price = historical_prices['Low'].min()
+def calculate_atr(high, low, close, period=14):
+    high_low = high - low
+    high_close = np.abs(high - close.shift())
+    low_close = np.abs(low - close.shift())
     
-    if "SHORT" in trade_direction:
-        entry = current_price
-        stop_loss = entry * 1.01  # 1% por encima del precio de entrada
-        tp1 = predicted_price  # TP1 es siempre el precio predicho
-        risk = entry - tp1
-        tp2 = entry - (2 * risk)  # TP2 mantiene el ratio de riesgo/recompensa de 1:2
-    else:  # LONG
-        entry = current_price
-        stop_loss = entry * 0.99  # 1% por debajo del precio de entrada
-        tp1 = predicted_price  # TP1 es siempre el precio predicho
-        risk = tp1 - entry
-        tp2 = entry + (2 * risk)  # TP2 mantiene el ratio de riesgo/recompensa de 1:2
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = np.max(ranges, axis=1)
     
-    return entry, tp1, tp2, stop_loss
+    return true_range.rolling(period).mean()
 
-def create_chart(symbol, days=7, entry=None, tp1=None, tp2=None, stop_loss=None, trade_direction=None, interval='1d'):
+def find_entry_and_targets(recent_prices, current_price, predicted_price, trade_direction):
+    if recent_prices.empty:
+        print("Advertencia: Datos recientes vacíos. Usando precios actuales y predichos.")
+        return current_price, current_price * 0.95, predicted_price, predicted_price * 1.05, predicted_price * 1.09
+
+    # Calcular ATR usando datos horarios
+    atr = calculate_atr(recent_prices['High'], recent_prices['Low'], recent_prices['Close'], period=14).iloc[-1]
+
+    if "LONG" in trade_direction:
+        # Encontrar el precio más bajo reciente que sea menor que el precio predicho
+        lower_prices = recent_prices[recent_prices['Low'] < predicted_price]
+        if not lower_prices.empty:
+            entry = lower_prices['Low'].min()
+        else:
+            entry = current_price
+        
+        # Stop Loss: 2 ATR por debajo de la entrada
+        stop_loss = entry - 2 * atr
+        
+        # Take Profits
+        tp1 = predicted_price
+        tp2 = recent_prices['High'].max()  # Valor más alto reciente
+        tp3 = entry * 1.09  # 9% por encima de la entrada
+        
+    else:  # SHORT
+        # Encontrar el precio más alto reciente que sea mayor que el precio predicho
+        higher_prices = recent_prices[recent_prices['High'] > predicted_price]
+        if not higher_prices.empty:
+            entry = higher_prices['High'].max()
+        else:
+            entry = current_price
+        
+        # Stop Loss: 2 ATR por encima de la entrada
+        stop_loss = entry + 2 * atr
+        
+        # Take Profits
+        tp1 = predicted_price
+        tp2 = recent_prices['Low'].min()  # Valor más bajo reciente
+        tp3 = entry * 0.90  # 10% por debajo de la entrada
+
+    # Asegurar una relación riesgo/recompensa mínima de 1:2
+    risk = abs(entry - stop_loss)
+    for tp in [tp1, tp2, tp3]:
+        if abs(entry - tp) < 2 * risk:
+            if "LONG" in trade_direction:
+                tp = entry + 2 * risk
+            else:
+                tp = entry - 2 * risk
+
+    return entry, stop_loss, tp1, tp2, tp3
+
+def validate_price(price, fallback, name):
+    if np.isnan(price) or np.isinf(price):
+        print(f"Advertencia: {name} calculado no es válido. Usando valor alternativo.")
+        return fallback
+    return price
+
+def create_chart(symbol, days=365, entry=None, tp1=None, tp2=None, tp3=None, stop_loss=None, trade_direction=None, interval='1d'):
     print(f"Iniciando creación del gráfico para {symbol} con intervalo {interval}")
     end_date = datetime.now(pytz.UTC)
     start_date = end_date - timedelta(days=days)
@@ -224,16 +284,18 @@ def create_chart(symbol, days=7, entry=None, tp1=None, tp2=None, stop_loss=None,
     s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=False)
     
     annotations = []
-    if all(v is not None for v in [entry, tp1, tp2, stop_loss, trade_direction]):
+    if all(v is not None for v in [entry, tp1, tp2, tp3, stop_loss, trade_direction]):
         color = 'g' if "LONG" in trade_direction else 'r'
         entry_line = [float(entry)] * len(data)
         tp1_line = [float(tp1)] * len(data)
         tp2_line = [float(tp2)] * len(data)
+        tp3_line = [float(tp3)] * len(data)
         stop_loss_line = [float(stop_loss)] * len(data)
         annotations.extend([
             mpf.make_addplot(entry_line, color=color, linestyle='--', label=f'Entry: {entry:.2f}'),
             mpf.make_addplot(tp1_line, color=color, linestyle=':', label=f'TP1: {tp1:.2f}'),
             mpf.make_addplot(tp2_line, color=color, linestyle=':', label=f'TP2: {tp2:.2f}'),
+            mpf.make_addplot(tp3_line, color=color, linestyle=':', label=f'TP3: {tp3:.2f}'),
             mpf.make_addplot(stop_loss_line, color='purple', linestyle='-.', label=f'SL: {stop_loss:.2f}')
         ])
     
@@ -303,7 +365,7 @@ def predictPrice(interval='1d'):
     PREDICTION_SCOPE = 0
 
     stock_prices = yf.download(SYMBOL, interval=INTERVAL)
-    SPY = yf.download("DX-Y.NYB", interval=interval)["Close"]
+    SPY = yf.download("SPY", interval=interval)["Close"]
 
     stock_prices = feature_engineering(stock_prices, SPY)
 
@@ -327,18 +389,19 @@ def predictPrice(interval='1d'):
     
     return predicted_price, prediction_date, prediction_days, mae
 
+
 def main():
     symbol = args.symbol.upper()
-    interval = '1d'  # Puedes cambiar esto a '4h' cuando quieras usar velas de 4 horas
     
     try:
-        print(f"Iniciando predicción para {symbol} con intervalo {interval}")
+        print(f"Iniciando predicción para {symbol}")
         current_price = get_current_price(symbol)
         if current_price is None:
             raise ValueError(f"No se pudo obtener el precio actual para {symbol}")
         print(f"Precio actual obtenido: ${current_price:.2f}")
 
-        predicted_price, prediction_date, prediction_days, mae = predictPrice(interval)
+        # Predicción usando datos diarios
+        predicted_price, prediction_date, prediction_days, mae = predictPrice(interval='1d')
         if predicted_price is None:
             raise ValueError(f"No se pudo obtener la predicción de precio para {symbol}")
         print(f"Precio predicho: ${predicted_price:.2f} para {prediction_date}")
@@ -347,15 +410,22 @@ def main():
         trade_direction = determine_trade_direction(current_price, predicted_price)
         print(f"Dirección del trade: {trade_direction}")
         
-        historical_prices = get_historical_prices(symbol, days=7, interval=interval)
-        print("Datos históricos obtenidos:")
+        # Obtenemos datos históricos del último año con intervalo diario
+        historical_prices = get_historical_prices(symbol, days=365, interval='1d')
+        print("Datos históricos obtenidos (último año, intervalo diario):")
         print(historical_prices)
+
+        # Obtenemos datos recientes de los últimos 3 días con intervalo horario
+        recent_prices = get_recent_prices(symbol, days=3, interval='1h')
+        print("Datos recientes obtenidos (últimos 3 días, intervalo horario):")
+        print(recent_prices)
 
         highest_volume_prices = get_highest_volume_prices(historical_prices, n=4)
 
-        entry, tp1, tp2, stop_loss = find_entry_and_targets(historical_prices, current_price, predicted_price, trade_direction)
+        # Usamos los datos recientes horarios para calcular niveles de entrada y salida
+        entry, stop_loss, tp1, tp2, tp3 = find_entry_and_targets(recent_prices, current_price, predicted_price, trade_direction)
 
-        print(f"Niveles calculados: Entry=${entry:.2f}, TP1=${tp1:.2f}, TP2=${tp2:.2f}, SL=${stop_loss:.2f}")
+        print(f"Niveles calculados (basados en datos horarios de los últimos 3 días): Entry=${entry:.2f}, SL=${stop_loss:.2f}, TP1=${tp1:.2f}, TP2=${tp2:.2f}, TP3=${tp3:.2f}")
 
         now = datetime.now(colombia_tz)
         specific_prices = {}
@@ -385,12 +455,37 @@ def main():
             "stop_loss": float(stop_loss),
             "target_price_1": float(tp1),
             "target_price_2": float(tp2),
-            "highest_price_7d": float(historical_prices['High'].max()),
-            "lowest_price_7d": float(historical_prices['Low'].min()),
+            "target_price_3": float(tp3),
+            "highest_price_1y": float(historical_prices['High'].max()),
+            "lowest_price_1y": float(historical_prices['Low'].min()),
+            "highest_price_3d": float(recent_prices['High'].max()),
+            "lowest_price_3d": float(recent_prices['Low'].min()),
             "token": symbol,
             "highest_volume_prices": highest_volume_prices,
             **specific_prices
         }
+
+        # Sen signals via API 
+        dataApi = {
+            'user' : '60d5f9c34d1f4a36e8d12345', 
+            'exchange' : 'Binance',
+            'plan' : 'premium',
+            'currency' : symbol,
+            'trend' : trade_direction,
+            'timeframe' : '1H',
+            'order' : 'Buy',
+            'prediction' : float(predicted_price),
+            'type' : 'stocks',
+            'tp' : float(tp1),
+            'sl' : float(stop_loss),
+            'entry' : float(entry),
+            'note' : 'Trade based on news'
+        }
+
+        print("--------send--to--api--------------")
+        send_prediction_data_to_api(dataApi)
+
+        print("----------------------------------")
         
         print("Guardando datos de predicción...")
         filename = f'../data/prediction-{symbol}.json'
@@ -400,7 +495,7 @@ def main():
         
         print(json.dumps(prediction_data, indent=4))
         
-        print(f"Valores para el gráfico: entry={entry}, tp1={tp1}, tp2={tp2}, stop_loss={stop_loss}, trade_direction={trade_direction}")
+        print(f"Valores para el gráfico: entry={entry}, tp1={tp1}, tp2={tp2}, tp3={tp3}, stop_loss={stop_loss}, trade_direction={trade_direction}")
         
         print("Verificando datos históricos:")
         print(historical_prices)
@@ -409,7 +504,7 @@ def main():
         chart_path = None
         if not historical_prices.empty and len(historical_prices) >= 2:
             print("Intentando crear el gráfico...")
-            chart_path = create_chart(symbol, days=7, entry=entry, tp1=tp1, tp2=tp2, stop_loss=stop_loss, trade_direction=trade_direction, interval=interval)
+            chart_path = create_chart(symbol, days=365, entry=entry, tp1=tp1, tp2=tp2, tp3=tp3, stop_loss=stop_loss, trade_direction=trade_direction, interval='1d')
             if chart_path:
                 print(f"Gráfico creado exitosamente en: {chart_path}")
             else:
@@ -431,17 +526,18 @@ Predicción para los próximos {prediction_days} días:
 - Dirección del Trade: {prediction_data['trade_direction']}
 - MAE (Error Medio Absoluto): {prediction_data['mae']:.2f}
 
-Niveles de Trading:
+Niveles de Trading (basados en datos de los últimos 3 días):
 - Precio de Entrada: ${prediction_data['entry_price']:.2f}
 - Stop Loss: ${prediction_data['stop_loss']:.2f}
-- Objetivo 1 (TP1): ${prediction_data['predicted_price']:.2f}
+- Objetivo 1 (TP1): ${prediction_data['target_price_1']:.2f}
 - Objetivo 2 (TP2): ${prediction_data['target_price_2']:.2f}
+- Objetivo 3 (TP3): ${prediction_data['target_price_3']:.2f}
 
-Rango de Precios (últimos 7 días):
-- Precio Más Alto: ${prediction_data['highest_price_7d']:.2f}
-- Precio Más Bajo: ${prediction_data['lowest_price_7d']:.2f}
+Rango de Precios:
+- Último año (Max/Min): ${prediction_data['highest_price_1y']:.2f} / ${prediction_data['lowest_price_1y']:.2f}
+- Últimos 3 días (Max/Min): ${prediction_data['highest_price_3d']:.2f} / ${prediction_data['lowest_price_3d']:.2f}
 
-Precios con Mayor Volumen (últimos 7 días):
+Precios con Mayor Volumen (último año):
 {chr(10).join([f"- {price['date']}: ${price['price']:.2f} (Volumen: {price['volume']:,.0f})" for price in prediction_data['highest_volume_prices']])}
 
 Generado el {current_date} a las {current_time}
@@ -455,14 +551,6 @@ Generado el {current_date} a las {current_time}
             print(f"No se pudo encontrar el archivo del gráfico en {chart_path if chart_path else 'ninguna ubicación'}. Enviando solo el mensaje.")
             send_to_telegram(message, None)
 
-        for days in range(7):
-            specific_date = now.date() - timedelta(days=days)
-            if not historical_prices.empty:
-                print(f"\nDatos de hace {days} días ({specific_date}):")
-                print(historical_prices.loc[historical_prices.index.date == specific_date])
-            else:
-                print(f"\nNo hay datos disponibles para hace {days} días ({specific_date})")
-
         print(f"\nDebug Information:")
         print(f"Current Price: {current_price}")
         print(f"Predicted Price: {predicted_price}")
@@ -471,6 +559,7 @@ Generado el {current_date} a las {current_time}
         print(f"Stop Loss: {stop_loss}")
         print(f"Target Price 1: {tp1}")
         print(f"Target Price 2: {tp2}")
+        print(f"Target Price 3: {tp3}")
 
     except Exception as e:
         print(f"Se produjo un error: {e}")
